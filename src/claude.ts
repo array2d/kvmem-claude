@@ -1,22 +1,25 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { isKind, isSlug, type Kind, type MemRef } from './mem.ts';
+import { isKind, isSlug, type Kind, type MemRef, type Memory } from './mem.ts';
 
 /**
- * Claude Code 记忆目录 ↔ kvspace 的格式翻译（本仓是参考实现，其余三家照此对齐）。
+ * Claude Code 记忆文件 ↔ kvspace 的格式翻译（本仓是参考实现，其余三家照此对齐）。
  *
  *   ~/.claude/projects/<scope>/memory/
  *       MEMORY.md         索引投影：`- [标题](<slug>.md) — 摘要`
  *       <slug>.md         `---` frontmatter（name/description/metadata.*）+ 正文
  *
+ * 这两个文件都是 kvspace 的**投影**（`kvmem render` 生成），不是存储：真相只有
+ * kvspace 一份。本模块只做双向的格式翻译，不裁决谁更新。
+ *
  * 映射：
- *   <slug>.md 文件名          → <slug>（路径段）
- *   frontmatter.name          → <slug>（必须一致，否则 error）
+ *   <slug>.md 文件名          → <slug>（身份；与 frontmatter.name 不一致也照用文件名）
+ *   frontmatter.name          → meta/name（原样，不当 key 用）
  *   frontmatter.description   → meta/description
  *   frontmatter.metadata.*    → meta/*（type / node_type / project / originSessionId / created）
  *   frontmatter.metadata.modified → meta/updated
- *   MEMORY.md 行号             → meta/order（索引顺序是只有索引才有的字段）
+ *   MEMORY.md 行号             → meta/order（顺序住在 kvspace，重建索引时按它排）
  *   MEMORY.md `[标题]`         → title（缺省取 description）
  *   MEMORY.md ` — 摘要`        → desc
  *   frontmatter 之后的正文     → body
@@ -112,18 +115,19 @@ export function renderIndex(refs: MemRef[]): string {
 function parseIndex(file: string): Map<string, { title: string; desc: string; order: number }> {
     const out = new Map<string, { title: string; desc: string; order: number }>();
     if (!fs.existsSync(file)) return out;
-    const lines = fs.readFileSync(file, 'utf8').split('\n');
     let order = 0;
-    for (const [i, line] of lines.entries()) {
-        if (line === '') continue;
-        const m = /^- \[(.+?)\]\(([^()]+)\.md\) — (.*)$/.exec(line);
-        if (m === null) throw new Error(`${file}:${i + 1} 不是索引行：${JSON.stringify(line)}`);
+    for (const [i, line] of fs.readFileSync(file, 'utf8').split('\n').entries()) {
+        const m = INDEX_LINE.exec(line);
+        if (m === null) continue;
         const slug = m[2] as string;
         if (!isSlug(slug)) throw new Error(`${file}:${i + 1} 非法 slug：${slug}`);
         out.set(slug, { title: m[1] as string, desc: m[3] as string, order: order++ });
     }
     return out;
 }
+
+/** 索引行形如 `- [标题](<slug>.md) — 摘要`；其余行（`# Memory Index` 之类的标题、说明）不是记忆，跳过。 */
+const INDEX_LINE = /^- \[(.+?)\]\(([^()]+)\.md\) — (.*)$/;
 
 export function parseMemoryText(text: string, whence: string): { meta: Record<string, string>; body: string } {
     const lines = text.split('\n');
@@ -194,4 +198,38 @@ export function kindOf(meta: Record<string, string>, whence: string): Kind {
     const t = meta['type'];
     if (t === undefined || !isKind(t)) throw new Error(`${whence}: metadata.type 缺失或非法：${t}`);
     return t;
+}
+
+/** 本地 .md → kvspace 记忆。title / desc 只活在索引行里，缺则退回 slug / description。 */
+export function toMemory(scope: string, lm: LocalMemory, prev?: Memory): Memory {
+    const kind = kindOf(lm.meta, `${lm.slug}.md`);
+    const order = lm.order ?? (prev?.meta['order'] === undefined ? null : Number(prev.meta['order']));
+    const meta: Record<string, string> = { ...lm.meta, src: 'claude' };
+    if (order !== null) meta['order'] = String(order);
+    return {
+        scope,
+        kind,
+        slug: lm.slug,
+        title: prev?.title ?? lm.title ?? lm.slug,
+        desc: prev?.desc ?? lm.desc ?? lm.meta['description'] ?? '',
+        body: lm.body,
+        meta,
+        uses: prev?.uses ?? 0,
+    };
+}
+
+/** kvspace 记忆 → 本地 .md 的投影形态；`src` / `order` 不进 frontmatter。 */
+export function toLocal(m: Memory): LocalMemory {
+    const meta: Record<string, string> = { ...m.meta };
+    delete meta['src'];
+    delete meta['order'];
+    return {
+        slug: m.slug,
+        meta,
+        body: m.body,
+        title: m.title,
+        desc: m.desc,
+        order: m.meta['order'] === undefined ? null : Number(m.meta['order']),
+        mtimeMs: Date.parse(m.meta['updated'] ?? ''),
+    };
 }

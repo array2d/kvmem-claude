@@ -2,12 +2,13 @@
 import fs from 'node:fs';
 import { KINDS, isKind, orderOf, type Kind, type Memory } from './mem.ts';
 import { memoryDir, projectSlug, readLocal, renderIndex, renderMemoryText } from './claude.ts';
-import { journalCount, openStore, pendingPath, RemoteStore } from './store.ts';
-import { runExport, runImport, runSync, statePathOf, type SyncOptions } from './sync.ts';
+import { journalCount, nextOrder, openStore, pendingPath, RemoteStore } from './store.ts';
+import { runImport } from './migrate.ts';
+import { renderProjection } from './project.ts';
 
 const USAGE = `kvmem —— kvspace 记忆（Claude Code 适配器 / 参考实现）
 
-记忆面
+记忆面（kvspace 是唯一存储，也是唯一真相）
   kvmem put <scope>/<kind>/<slug> [--title T] [--desc D] [--body-file F|-] [--meta k=v]…
   kvmem get <scope>/<kind>/<slug> [--json]
   kvmem ls <scope>[/<kind>] [--json]
@@ -15,10 +16,9 @@ const USAGE = `kvmem —— kvspace 记忆（Claude Code 适配器 / 参考实�
   kvmem use <scope>/<kind>/<slug>
   kvmem rm <scope>/<kind>/<slug>
 
-Claude Code 同步（scope 取 --scope，或由 --project 目录名推导）
-  kvmem import [--dry-run] [--prefer local]
-  kvmem export [--dry-run] [--prefer remote]
-  kvmem sync   [--dry-run] [--prefer local|remote]
+本地投影（Claude Code 的 .md 与 MEMORY.md 是派生品，可随时重建）
+  kvmem import [--dry-run] [--force]   已有 .md 一次性搬进 kvspace（已有默认跳过）
+  kvmem render [--dry-run]             kvspace → 本地 .md + MEMORY.md
   kvmem status
 
 接入
@@ -31,8 +31,8 @@ Claude Code 同步（scope 取 --scope，或由 --project 目录名推导）
 
 kind ∈ ${KINDS.join(' | ')}`;
 
-const BOOL = new Set(['json', 'dry-run', 'help']);
-const KNOWN = new Set([...BOOL, 'scope', 'project', 'kvspace', 'prefer', 'title', 'desc', 'body-file', 'meta']);
+const BOOL = new Set(['json', 'dry-run', 'help', 'force']);
+const KNOWN = new Set([...BOOL, 'scope', 'project', 'kvspace', 'title', 'desc', 'body-file', 'meta']);
 
 type Args = { pos: string[]; flags: Map<string, string[]> };
 
@@ -99,14 +99,6 @@ function readBody(a: Args): string {
     return f === '-' ? fs.readFileSync(0, 'utf8') : fs.readFileSync(f, 'utf8');
 }
 
-function syncOptions(a: Args): SyncOptions {
-    const prefer = one(a, 'prefer');
-    if (prefer !== undefined && prefer !== 'local' && prefer !== 'remote') {
-        throw new Error(`--prefer 只能是 local 或 remote：${prefer}`);
-    }
-    return { dryRun: a.flags.has('dry-run'), prefer: prefer ?? null };
-}
-
 function logger(prefix: string): (x: { slug: string; note: string }) => void {
     return ({ slug, note }) => process.stdout.write(`${prefix}${slug}: ${note}\n`);
 }
@@ -130,8 +122,9 @@ function run(cmd: string, a: Args): void {
     switch (cmd) {
         case 'put': {
             const { scope, kind, slug } = splitMemoryPath(a.pos[0] ?? '');
+            const store = openStore(dsnOf(a));
             const now = new Date().toISOString();
-            const meta: Record<string, string> = { type: kind, src: 'claude', created: now, updated: now, order: '0' };
+            const meta: Record<string, string> = { type: kind, src: 'claude', created: now, updated: now };
             for (const kv of a.flags.get('meta') ?? []) {
                 const eq = kv.indexOf('=');
                 if (eq < 1) throw new Error(`--meta 需要 k=v：${kv}`);
@@ -139,7 +132,7 @@ function run(cmd: string, a: Args): void {
             }
             meta['type'] = kind;
             meta['updated'] = now;
-            const store = openStore(dsnOf(a));
+            meta['order'] ??= nextOrder(store, scope);
             store.put({
                 scope,
                 kind,
@@ -198,15 +191,13 @@ function run(cmd: string, a: Args): void {
             return;
         }
         case 'import':
-        case 'export':
-        case 'sync': {
+        case 'render': {
             const scope = scopeOf(a);
-            const opt = syncOptions(a);
             const store = requireRemote(a);
-            const log = logger(opt.dryRun ? '[dry-run] ' : '');
-            if (cmd === 'import') runImport(store.mem, scope, opt, log);
-            else if (cmd === 'export') runExport(store.mem, scope, opt, log);
-            else runSync(store.mem, scope, opt, log);
+            const dryRun = a.flags.has('dry-run');
+            const log = logger(dryRun ? '[dry-run] ' : '');
+            if (cmd === 'import') runImport(store.mem, scope, { dryRun, force: a.flags.has('force') }, log);
+            else renderProjection(store.mem, scope, { dryRun }, log);
             store.close();
             return;
         }
@@ -214,14 +205,11 @@ function run(cmd: string, a: Args): void {
             const scope = scopeOf(a);
             const store = requireRemote(a);
             const remote = store.ls(scope);
-            const localCount = fs.existsSync(memoryDir(scope)) ? readLocal(scope).length : null;
+            const projected = fs.existsSync(memoryDir(scope)) ? readLocal(scope).length : null;
             const pending = fs.existsSync(pendingPath()) ? journalCount() : 0;
-            const state = fs.existsSync(statePathOf(scope)) ? '有' : '无';
             process.stdout.write(`scope          ${scope}\n`);
-            process.stdout.write(`记忆目录       ${memoryDir(scope)}${localCount === null ? '（不存在）' : ''}\n`);
-            process.stdout.write(`本地记忆       ${localCount ?? '-'}\n`);
-            process.stdout.write(`kvspace 记忆   ${remote.length}\n`);
-            process.stdout.write(`同步状态文件   ${state}\n`);
+            process.stdout.write(`kvspace 记忆   ${remote.length}（唯一存储）\n`);
+            process.stdout.write(`本地投影       ${memoryDir(scope)}${projected === null ? '（无）' : ` ${projected} 条`}\n`);
             process.stdout.write(`pending 日志   ${pending}\n`);
             store.close();
             return;

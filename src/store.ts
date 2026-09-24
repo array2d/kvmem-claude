@@ -3,17 +3,16 @@ import path from 'node:path';
 
 import { KVSpace } from './kvspace.ts';
 import { MemStore, byOrder, orderOf, type Kind, type Memory, type MemRef } from './mem.ts';
-import { claudeHome, memoryDir, readLocal } from './claude.ts';
-import { toMemory } from './sync.ts';
+import { claudeHome, memoryDir, readLocal, toMemory } from './claude.ts';
 
 /**
  * 记忆面的两个实现。
  *
- *   RemoteStore  kvspace（真相源）
- *   LocalStore   后端不可用时的降级：读本地 .md，写操作进 pending 日志，重连后回放
+ *   RemoteStore  kvspace —— 唯一存储，也是唯一真相
+ *   LocalStore   后端不可用时的降级面：读本地投影，写进 pending 日志待重连回放
  *
- * 降级要求该 scope 有本地记忆目录（Claude Code 有，其它 agent 未必）——`readLocal` 会直接报错，
- * 所以"没有记忆目录"是硬故障而不是空结果：空结果与故障不可混为一谈。
+ * 降级要求该 scope 已有本地投影（`kvmem render` 生成过，或 Claude Code 自己写的）——`readLocal`
+ * 会直接报错，所以"没有投影可读"是硬故障而不是空结果：空结果与故障不可混为一谈。
  */
 
 export interface Store {
@@ -27,6 +26,13 @@ export interface Store {
 }
 
 export type Pending = { op: 'put'; memory: Memory } | { op: 'use'; scope: string; kind: Kind; slug: string };
+
+/** 新记忆落在索引末尾：order 取当前最大 + 1（空 scope 从 0 起）。 */
+export function nextOrder(store: Store, scope: string): string {
+    let max = -1;
+    for (const ref of store.ls(scope)) max = Math.max(max, ref.order ?? -1);
+    return String(max + 1);
+}
 
 export function pendingPath(): string {
     return path.join(claudeHome(), '.kvmem', 'pending.jsonl');

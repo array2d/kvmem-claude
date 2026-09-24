@@ -23,12 +23,15 @@ export function isKind(s: string): s is Kind {
 }
 
 const SCOPE_RE = /^[A-Za-z0-9._-]+$/;
-/** slug 同时是文件名（`<slug>.md`）与 kvspace 路径段，故禁 `/` 与 `.`；大小写不限（现存 README-no-hype）。 */
-const SLUG_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+/**
+ * slug 同时是 kvspace 路径段与本地文件名 `<slug>.md`。
+ * 只禁两个符号：`/`（路径分隔符）与 `·`（kvspace 成员符）；其余字符一律放行，空串除外。
+ */
+const SLUG_FORBIDDEN = /[/·]/;
 const META_KEY_RE = /^[A-Za-z][A-Za-z0-9_]*$/;
 
 export function isSlug(s: string): boolean {
-    return SLUG_RE.test(s);
+    return s.length > 0 && !SLUG_FORBIDDEN.test(s);
 }
 
 export type Memory = {
@@ -54,6 +57,9 @@ export type MemRef = {
     order: number | null;
 };
 
+/** 迁移与投影命令的动作记录：一条记忆一步。 */
+export type Action = { slug: string; note: string };
+
 export function entryKey(scope: string, kind: Kind, slug: string): string {
     assertScope(scope);
     assertSlug(slug);
@@ -70,7 +76,7 @@ function assertScope(scope: string): void {
 }
 
 function assertSlug(slug: string): void {
-    if (!isSlug(slug)) throw new Error(`非法 slug（字母数字开头的 kebab-case）：${JSON.stringify(slug)}`);
+    if (!isSlug(slug)) throw new Error(`非法 slug（不得含 / 与 ·）：${JSON.stringify(slug)}`);
 }
 
 function assertMetaKey(k: string): void {

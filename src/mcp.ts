@@ -3,12 +3,13 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { KINDS, orderOf, type Kind, type Memory } from './mem.ts';
 import { renderIndex, renderMemoryText } from './claude.ts';
-import { openStore, RemoteStore, type Store } from './store.ts';
+import { nextOrder, openStore, RemoteStore, type Store } from './store.ts';
 
 /**
  * kvmem MCP server（stdio）。
  *
  * 只暴露五个记忆面动作，形状与 `kvmem` CLI 一一对应——适配器只做格式翻译，不改 agent 自己的格式。
+ * kvspace 是唯一存储：本地 .md 只是 `kvmem render` 生成的投影，写一律落 kvspace。
  * 后端不可用时按 scope 降级读本地文件；降级状态在返回文本里显式标出，不静默。
  * 故障绝不返回空结果：连本地文件也没有时抛出错误。
  */
@@ -137,7 +138,7 @@ export async function serve(opt: ServeOptions): Promise<void> {
                             src: meta?.['src'] ?? 'claude',
                             created: meta?.['created'] ?? now,
                             updated: now,
-                            order: meta?.['order'] ?? '0',
+                            order: meta?.['order'] ?? nextOrder(s, sc),
                         },
                         uses: 0,
                     });
