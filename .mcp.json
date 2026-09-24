@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "kvmem": {
+      "command": "node",
+      "args": ["src/cli.ts", "mcp"],
+      "env": {
+        "KVSPACE": "redis://127.0.0.1:6379"
+      }
+    }
+  }
+}

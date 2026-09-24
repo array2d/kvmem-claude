@@ -1,0 +1,25 @@
+{
+  "name": "kvmem-claude",
+  "version": "0.1.0",
+  "private": true,
+  "description": "kvspace 记忆接入：Claude Code 适配器（参考实现）",
+  "type": "module",
+  "bin": {
+    "kvmem": "src/cli.ts"
+  },
+  "engines": {
+    "node": ">=23"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node test/e2e.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.20.0",
+    "koffi": "^3.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}
